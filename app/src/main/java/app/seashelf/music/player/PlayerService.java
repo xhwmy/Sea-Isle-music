@@ -28,6 +28,7 @@ import androidx.media3.common.Player;
 import androidx.media3.datasource.HttpDataSource;
 import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import app.seashelf.music.SeaShelfApp;
 import app.seashelf.music.api.Song;
@@ -77,6 +78,9 @@ public final class PlayerService extends Service {
     private MediaSession session;
     private AudioManager audio;
     private AudioFocusRequest focusRequest;
+    private AudioOutput audioOutput;
+    private VolumeSettings volumeSettings;
+    private Runnable volumeListener;
     private boolean prepared;
     private boolean preparing;
     private boolean playing;
@@ -129,16 +133,25 @@ public final class PlayerService extends Service {
         playbackThread = new HandlerThread("SeaShelfPlayback"); playbackThread.start();
         playback = new Handler(playbackThread.getLooper());
         audio = (AudioManager) getSystemService(AUDIO_SERVICE);
+        audioOutput = AudioOutput.androidOutput();
+        volumeSettings = app().volumeSettings();
+        volumeListener = () -> playback.post(() -> {
+            if (!destroyed) syncVolumeSettings();
+        });
+        volumeSettings.attach(volumeListener);
         AudioAttributes attributes = new AudioAttributes.Builder().setUsage(AudioAttributes.USAGE_MEDIA)
                 .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC).build();
         focusRequest = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN).setAudioAttributes(attributes)
                 .setOnAudioFocusChangeListener(change -> {
+                    if (destroyed || !hasOwner()) return;
                     if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT || change == AudioManager.AUDIOFOCUS_LOSS) {
                         intentState.focusLost(change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT);
                         pauseAudio(); update();
-                    } else if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) setVolume(0.2f);
+                    } else if (change == AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK) {
+                        audioOutput.duck(); applyPlayerVolume();
+                    }
                     else if (change == AudioManager.AUDIOFOCUS_GAIN) {
-                        setVolume(1f); intentState.focusGained();
+                        audioOutput.focusGranted(); applyPlayerVolume(); intentState.focusGained();
                         if (intentState.wantsPlay()) resume();
                     }
                 }, playback).build();
@@ -158,6 +171,7 @@ public final class PlayerService extends Service {
             registerReceiver(noisyReceiver, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY), RECEIVER_NOT_EXPORTED);
         else registerReceiver(noisyReceiver, new IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
         playback.post(() -> {
+            syncVolumeSettings();
             initialize();
             playback.post(tick);
         });
@@ -166,6 +180,7 @@ public final class PlayerService extends Service {
     private final Runnable tick = new Runnable() {
         @Override public void run() {
             if (destroyed) return;
+            audioOutput.verify(); publishVolumeState();
             if (hasOwner()) {
                 last = capture();
                 if (playing && SystemClock.elapsedRealtime() - lastPersist >= 5000) {
@@ -304,9 +319,16 @@ public final class PlayerService extends Service {
                             .setBufferDurationsMs(15000, 45000, 1000, 2000)
                             .setPrioritizeTimeOverSizeThresholds(true).build()).build();
             player = current;
+            current.setVolume(audioOutput.playerVolume());
             current.setWakeMode(C.WAKE_MODE_LOCAL);
             current.setAudioAttributes(new androidx.media3.common.AudioAttributes.Builder()
                     .setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build(), false);
+            current.addAnalyticsListener(new AnalyticsListener() {
+                @Override public void onAudioSessionIdChanged(EventTime eventTime, int audioSessionId) {
+                    if (!isCurrent(current, request)) return;
+                    audioOutput.sessionChanged(audioSessionId); publishVolumeState();
+                }
+            });
             final int initialPosition = intentState.positionMs();
             current.addListener(new Player.Listener() {
                 @Override public void onPlaybackStateChanged(int state) {
@@ -418,7 +440,10 @@ public final class PlayerService extends Service {
         if (audio.requestAudioFocus(focusRequest) != AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
             intentState.pause(); error = "其他应用正在使用音频，请稍后播放。"; return;
         }
-        try { player.play(); playing = player.isPlaying(); error = ""; }
+        try {
+            audioOutput.focusGranted(); applyPlayerVolume();
+            player.play(); playing = player.isPlaying(); error = "";
+        }
         catch (IllegalStateException invalid) { fail("播放中断，请点击重试。"); }
     }
     private void next() {
@@ -472,9 +497,13 @@ public final class PlayerService extends Service {
         update();
     }
     private static int boundedPosition(long value) { return (int) Math.min(Integer.MAX_VALUE, Math.max(0L, value)); }
-    private void setVolume(float value) {
-        if (player != null) try { player.setVolume(value); } catch (IllegalStateException ignored) { }
+    private void applyPlayerVolume() {
+        if (player != null) try { player.setVolume(audioOutput.playerVolume()); } catch (IllegalStateException ignored) { }
     }
+    private void syncVolumeSettings() {
+        audioOutput.setBoostDb(volumeSettings.boostDb()); publishVolumeState();
+    }
+    private void publishVolumeState() { volumeSettings.publish(volumeListener, audioOutput.state()); }
 
     private Snapshot capture() {
         int position = intentState.positionMs();
@@ -553,6 +582,7 @@ public final class PlayerService extends Service {
     }
     private void releasePlayer() {
         bufferedPercent = 0; prepared = false; preparing = false; playing = false; buffering = false; seekState.cancel();
+        audioOutput.release(); publishVolumeState();
         if (player != null) {
             ExoPlayer previous = player; player = null;
             previous.release();
@@ -560,6 +590,7 @@ public final class PlayerService extends Service {
     }
     @Override public void onDestroy() {
         destroyed = true; unregisterReceiver(noisyReceiver);
+        volumeSettings.detach(volumeListener);
         playback.removeCallbacksAndMessages(null);
         playback.post(() -> {
             if (hasOwner()) { intentState.pause(); pauseAudio(); persist(); last = capture(); }

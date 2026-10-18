@@ -4,6 +4,7 @@ import android.app.Application;
 import app.seashelf.music.api.SubsonicClient;
 import app.seashelf.music.player.PlayerService;
 import app.seashelf.music.player.PlaybackSessionStore;
+import app.seashelf.music.player.VolumeSettings;
 import app.seashelf.music.storage.CredentialStore;
 import java.util.concurrent.ExecutorService;
 
@@ -12,9 +13,11 @@ public final class SeaShelfApp extends Application {
     private volatile SubsonicClient client;
     private CredentialStore credentials;
     private PlaybackSessionStore playbackSessions;
+    private VolumeSettings volumeSettings;
 
     @Override public void onCreate() {
         super.onCreate();
+        volumeSettings = new VolumeSettings(this);
         playbackSessions = new PlaybackSessionStore(new java.io.File(getFilesDir(), "playback"),
                 java.util.concurrent.Executors.newSingleThreadExecutor(task -> new Thread(task, "SeaShelfSessionStore")));
         credentials = new CredentialStore(this);
@@ -31,6 +34,7 @@ public final class SeaShelfApp extends Application {
     public CredentialStore credentials() { return credentials; }
     public SubsonicClient client() { return client; }
     public PlaybackSessionStore playbackSessions() { return playbackSessions; }
+    public VolumeSettings volumeSettings() { return volumeSettings; }
     public void setClient(SubsonicClient value) { client = value; }
     public void signOut() {
         SubsonicClient previous = client;

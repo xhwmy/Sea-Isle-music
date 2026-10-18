@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.Intent;
 import android.content.res.ColorStateList;
+import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -42,9 +43,11 @@ public final class PlayerActivity extends Activity {
     private String displayedSongId;
     private boolean dragging;
     private QueueDialog queueDialog;
+    private VolumeDialog volumeDialog;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
         if (((SeaShelfApp) getApplication()).client() == null) {
             startActivity(new Intent(this, LoginActivity.class)); finish(); return;
         }
@@ -64,6 +67,9 @@ public final class PlayerActivity extends Activity {
         source.setOnClickListener(view -> showQueue());
         source.setContentDescription("查看播放队列");
         header.addView(source, new LinearLayout.LayoutParams(0, -1, 1));
+        Button volume = compactButton("音量", false, "打开音量调节"); volume.setTextSize(13);
+        header.addView(volume, new LinearLayout.LayoutParams(UiKit.dp(this, 56), -1));
+        volume.setOnClickListener(view -> showVolume());
         lyricsToggle = compactButton(showingLyrics ? "封面" : "歌词", false, "切换封面和歌词");
         header.addView(lyricsToggle, new LinearLayout.LayoutParams(UiKit.dp(this, 64), -1));
         lyricsToggle.setOnClickListener(view -> {
@@ -190,8 +196,16 @@ public final class PlayerActivity extends Activity {
         if (queueDialog != null && queueDialog.isShowing()) return;
         queueDialog = new QueueDialog(this); queueDialog.show();
     }
+    private void showVolume() {
+        if (volumeDialog != null && volumeDialog.isShowing()) return;
+        volumeDialog = new VolumeDialog(this); volumeDialog.show();
+    }
     @Override protected void onResume() { super.onResume(); if (title != null) refresh(); }
     @Override protected void onPause() { handler.removeCallbacksAndMessages(null); super.onPause(); }
+    @Override protected void onStop() {
+        if (volumeDialog != null) { volumeDialog.dismiss(); volumeDialog = null; }
+        super.onStop();
+    }
     @Override protected void onSaveInstanceState(Bundle out) { out.putBoolean("lyrics", showingLyrics); super.onSaveInstanceState(out); }
 
     private void refresh() {
@@ -327,6 +341,7 @@ public final class PlayerActivity extends Activity {
         handler.removeCallbacksAndMessages(null);
         lyricsGeneration.next();
         if (queueDialog != null) { queueDialog.dismiss(); queueDialog = null; }
+        if (volumeDialog != null) { volumeDialog.dismiss(); volumeDialog = null; }
         super.onDestroy();
     }
 
