@@ -1,0 +1,60 @@
+apply plugin: 'com.android.application'
+
+def signingPropertiesFile = rootProject.file('.signing/credentials.properties')
+def signingProperties = new Properties()
+if (signingPropertiesFile.exists()) {
+    signingPropertiesFile.withInputStream { signingProperties.load(it) }
+}
+
+android {
+    namespace 'app.seashelf.music'
+    compileSdk 34
+
+    signingConfigs {
+        release {
+            if (signingPropertiesFile.exists()) {
+                storeFile rootProject.file('.signing/release.jks')
+                storePassword signingProperties.getProperty('storePassword')
+                keyAlias 'seashelf'
+                keyPassword signingProperties.getProperty('keyPassword')
+            }
+        }
+    }
+
+    defaultConfig {
+        applicationId 'app.seashelf.music'
+        minSdk 26
+        targetSdk 34
+        versionCode 12
+        versionName '0.3.1'
+        testInstrumentationRunner 'androidx.test.runner.AndroidJUnitRunner'
+    }
+
+    buildTypes {
+        debug {
+            if (project.hasProperty('testOnSignedDevice')) signingConfig signingConfigs.release
+        }
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    tasks.withType(JavaCompile).configureEach {
+        options.encoding = 'UTF-8'
+    }
+}
+
+dependencies {
+    implementation 'androidx.media3:media3-exoplayer:1.4.1'
+    implementation 'androidx.media3:media3-datasource:1.4.1'
+    implementation 'androidx.media3:media3-database:1.4.1'
+    testImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'junit:junit:4.13.2'
+    androidTestImplementation 'androidx.test:runner:1.5.2'
+}

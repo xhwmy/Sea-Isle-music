@@ -1,0 +1,21 @@
+.gradle/
+.idea/
+.superpowers/
+**/build/
+local.properties
+.signing/
+dist/
+__pycache__/
+*.iml
+.qa/
+*.apk
+*.aab
+*.jks
+*.keystore
+*.p12
+*.pfx
+*.db
+*.db-wal
+*.db-shm
+# This machine's existing startup helper contains a private absolute path.
+scripts/start-navidrome-hidden.vbs
