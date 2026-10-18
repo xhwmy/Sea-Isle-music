@@ -62,12 +62,14 @@ public final class SubsonicXml {
                 String value = item.getAttribute("value").trim();
                 if (value.isEmpty()) value = item.getTextContent().trim();
                 if (value.isEmpty()) continue;
-                int start = synced ? integer(item.getAttribute("start")) : -1;
+                int start = -1;
+                if (synced) try { start = Integer.parseInt(item.getAttribute("start")); }
+                catch (NumberFormatException ignored) { }
                 lines.add(new Lyrics.Line(start, value));
             }
             if (!lines.isEmpty()) {
                 Lyrics result = new Lyrics(synced, lines);
-                if (synced) return result;
+                if (result.synced()) return result;
                 if (plain.lines().isEmpty()) plain = result;
             }
         }

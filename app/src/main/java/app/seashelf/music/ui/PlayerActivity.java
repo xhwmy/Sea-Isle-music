@@ -8,6 +8,10 @@ import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.SystemClock;
+import android.provider.Settings;
+import android.net.Uri;
+import android.view.MotionEvent;
 import android.view.Gravity;
 import android.view.View;
 import android.widget.Button;
@@ -17,9 +21,11 @@ import android.widget.LinearLayout;
 import android.widget.ScrollView;
 import android.widget.SeekBar;
 import android.widget.TextView;
+import android.widget.Toast;
 import app.seashelf.music.SeaShelfApp;
 import app.seashelf.music.api.Lyrics;
-import app.seashelf.music.api.SubsonicClient;
+import app.seashelf.music.player.FloatingWindowPolicy;
+import app.seashelf.music.player.LyricState;
 import app.seashelf.music.player.PlaybackMode;
 import app.seashelf.music.player.PlayerService;
 import java.util.ArrayList;
@@ -33,8 +39,12 @@ public final class PlayerActivity extends Activity {
     private TextView lyricPreview;
     private Button lyricsToggle;
     private final List<TextView> lyricViews = new ArrayList<>();
-    private final RequestGeneration lyricsGeneration = new RequestGeneration();
     private Lyrics lyrics;
+    private LyricState displayedLyrics;
+    private final FloatingWindowPolicy overlayPermission = new FloatingWindowPolicy();
+    private boolean awaitingOverlaySettings;
+    private long followAfter;
+    private int followedLine = -2;
     private int highlightedLine = -2;
     private boolean showingLyrics;
     private TextView title, artist, elapsed, duration, error, source;
@@ -44,6 +54,7 @@ public final class PlayerActivity extends Activity {
     private boolean dragging;
     private QueueDialog queueDialog;
     private VolumeDialog volumeDialog;
+    private Button floatingButton, reloadLyrics;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -52,6 +63,8 @@ public final class PlayerActivity extends Activity {
             startActivity(new Intent(this, LoginActivity.class)); finish(); return;
         }
         showingLyrics = state != null && state.getBoolean("lyrics", false);
+        awaitingOverlaySettings = state != null && state.getBoolean("overlayPermission", false);
+        if (awaitingOverlaySettings) overlayPermission.request(false, true);
         LinearLayout root = UiKit.screen(this);
         root.setPadding(UiKit.dp(this, 16), UiKit.dp(this, 8), UiKit.dp(this, 16), UiKit.dp(this, 10));
         LinearLayout header = new LinearLayout(this);
@@ -97,7 +110,16 @@ public final class PlayerActivity extends Activity {
         content.addView(artStage, new LinearLayout.LayoutParams(-1, UiKit.dp(this, 200)));
         cover = UiKit.cover(this, 0);
         artStage.addView(cover, new FrameLayout.LayoutParams(UiKit.dp(this, 200), UiKit.dp(this, 200), Gravity.CENTER));
-        lyricsScroll = new ScrollView(this); lyricsScroll.setFillViewport(true);
+        lyricsScroll = new ScrollView(this) {
+            @Override public boolean dispatchTouchEvent(MotionEvent event) {
+                if (event.getActionMasked() == MotionEvent.ACTION_DOWN || event.getActionMasked() == MotionEvent.ACTION_MOVE
+                        || event.getActionMasked() == MotionEvent.ACTION_UP) {
+                    followAfter = SystemClock.elapsedRealtime() + 6000; followedLine = -2;
+                }
+                return super.dispatchTouchEvent(event);
+            }
+        };
+        lyricsScroll.setFillViewport(true);
         lyricLines = UiKit.column(this); lyricLines.setGravity(Gravity.CENTER_HORIZONTAL);
         lyricLines.setPadding(UiKit.dp(this, 18), UiKit.dp(this, 18), UiKit.dp(this, 18), UiKit.dp(this, 18));
         lyricsScroll.addView(lyricLines);
@@ -106,10 +128,18 @@ public final class PlayerActivity extends Activity {
         lyricPreview = UiKit.text(this, "", 13, UiKit.ACCENT, false);
         lyricPreview.setGravity(Gravity.CENTER); lyricPreview.setMaxLines(2);
         content.addView(lyricPreview, new LinearLayout.LayoutParams(-1, -2));
+        UiKit.gap(content, 8);
+        LinearLayout lyricActions = new LinearLayout(this);
+        content.addView(lyricActions, new LinearLayout.LayoutParams(-1, UiKit.dp(this, 48)));
+        floatingButton = compactButton("悬浮歌词", false, "开启悬浮播放器和歌词"); floatingButton.setTextSize(13);
+        reloadLyrics = compactButton("重新读取歌词", false, "重新读取电脑端的歌词"); reloadLyrics.setTextSize(13);
+        lyricActions.addView(floatingButton, controlParams(1, 48)); lyricActions.addView(reloadLyrics, controlParams(1, 48));
+        floatingButton.setOnClickListener(view -> requestFloatingWindow());
+        reloadLyrics.setOnClickListener(view -> PlayerService.command(this, PlayerService.ACTION_RELOAD_LYRICS));
         updateLyricsVisibility();
         // Titles can wrap and the upper area can scroll on very small screens. Transport and lyrics access stay pinned.
         details.addOnLayoutChangeListener((view, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom) -> {
-            int available = details.getHeight() - title.getHeight() - artist.getHeight() - UiKit.dp(this, 75);
+            int available = details.getHeight() - title.getHeight() - artist.getHeight() - UiKit.dp(this, 131);
             int stageHeight = Math.max(UiKit.dp(this, 112), Math.min(UiKit.dp(this, 300), available));
             if (artStage.getLayoutParams().height != stageHeight) {
                 artStage.getLayoutParams().height = stageHeight; artStage.requestLayout();
@@ -200,19 +230,48 @@ public final class PlayerActivity extends Activity {
         if (volumeDialog != null && volumeDialog.isShowing()) return;
         volumeDialog = new VolumeDialog(this); volumeDialog.show();
     }
-    @Override protected void onResume() { super.onResume(); if (title != null) refresh(); }
+    private void requestFloatingWindow() {
+        FloatingWindowPolicy.Request request = overlayPermission.request(Settings.canDrawOverlays(this), PlayerService.snapshot().song != null);
+        if (request == FloatingWindowPolicy.Request.NO_SONG) { Toast.makeText(this, "请先选择一首歌曲", Toast.LENGTH_SHORT).show(); return; }
+        if (request == FloatingWindowPolicy.Request.OPEN) { PlayerService.command(this, PlayerService.ACTION_SHOW_FLOATING); return; }
+        new AlertDialog.Builder(this).setTitle("开启悬浮歌词")
+                .setMessage("允许海屿音乐显示在其他应用上层后，可在使用其他应用时查看歌词和控制播放。关闭悬浮窗不会停止音乐。")
+                .setPositiveButton("前往允许", (dialog, which) -> {
+                    try {
+                        awaitingOverlaySettings = true;
+                        startActivity(new Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:" + getPackageName())));
+                    } catch (RuntimeException unavailable) {
+                        awaitingOverlaySettings = false; overlayPermission.close();
+                        Toast.makeText(this, "系统无法打开权限设置，请在应用设置中允许显示在其他应用上层", Toast.LENGTH_LONG).show();
+                    }
+                }).setNegativeButton("取消", (dialog, which) -> overlayPermission.close())
+                .setOnCancelListener(dialog -> overlayPermission.close()).show();
+    }
+    @Override protected void onResume() {
+        super.onResume();
+        if (awaitingOverlaySettings) {
+            awaitingOverlaySettings = false;
+            if (overlayPermission.permissionReturned(Settings.canDrawOverlays(this), PlayerService.snapshot().song != null))
+                PlayerService.command(this, PlayerService.ACTION_SHOW_FLOATING);
+            else Toast.makeText(this, "悬浮窗未开启，可稍后在播放页重试", Toast.LENGTH_SHORT).show();
+        }
+        if (title != null) { handler.removeCallbacksAndMessages(null); refresh(); }
+    }
     @Override protected void onPause() { handler.removeCallbacksAndMessages(null); super.onPause(); }
     @Override protected void onStop() {
         if (volumeDialog != null) { volumeDialog.dismiss(); volumeDialog = null; }
         super.onStop();
     }
-    @Override protected void onSaveInstanceState(Bundle out) { out.putBoolean("lyrics", showingLyrics); super.onSaveInstanceState(out); }
+    @Override protected void onSaveInstanceState(Bundle out) {
+        out.putBoolean("lyrics", showingLyrics); out.putBoolean("overlayPermission", awaitingOverlaySettings); super.onSaveInstanceState(out);
+    }
 
     private void refresh() {
         PlayerService.Snapshot state = PlayerService.snapshot();
         boolean hasSong = state.song != null;
         enabled(toggle, hasSong); enabled(lyricsToggle, hasSong); enabled(seek, hasSong);
         enabled(previous, hasSong); enabled(next, hasSong); enabled(mode, hasSong);
+        enabled(floatingButton, hasSong); enabled(reloadLyrics, hasSong && state.lyrics.status != LyricState.Status.LOADING);
         text(source, state.source + (hasSong ? " · " + state.queuePosition + " / " + state.queueSize : " · 队列为空"));
         description(source, state.source + "，播放队列共 " + state.queueSize + " 首，点击查看");
         text(error, state.statusText());
@@ -224,7 +283,7 @@ public final class PlayerActivity extends Activity {
         text(mode, modeLabel(state.mode)); description(mode, "播放模式：" + state.mode.label());
         if (!hasSong) {
             if (displayedSongId != null) {
-                displayedSongId = null; lyricsGeneration.next(); lyrics = null; showLyricMessage("选择一首歌开始播放");
+                displayedSongId = null; displayedLyrics = null; lyrics = null; showLyricMessage("选择一首歌开始播放");
             }
             text(title, "选择一首歌开始播放"); text(artist, ""); text(lyricPreview, "");
         } else {
@@ -232,8 +291,8 @@ public final class PlayerActivity extends Activity {
             if (!state.song.id().equals(displayedSongId)) {
                 displayedSongId = state.song.id();
                 CoverLoader.load(cover, ((SeaShelfApp) getApplication()).client(), state.song.coverArtId(), 512);
-                loadLyrics(displayedSongId);
             }
+            if (displayedLyrics != state.lyrics) { displayedLyrics = state.lyrics; lyrics = state.lyrics.lyrics; renderLyrics(); }
             updateActiveLyric(state.positionMs);
         }
         if (!dragging) {
@@ -263,32 +322,6 @@ public final class PlayerActivity extends Activity {
     }
     private static void enabled(View view, boolean value) { if (view.isEnabled() != value) view.setEnabled(value); }
 
-    private void loadLyrics(String songId) {
-        lyrics = null;
-        highlightedLine = -2;
-        lyricPreview.setText("正在读取歌词…");
-        showLyricMessage("正在读取歌词…");
-        long token = lyricsGeneration.next();
-        SeaShelfApp app = (SeaShelfApp) getApplication();
-        SubsonicClient client = app.client();
-        app.network().execute(() -> {
-            try {
-                Lyrics fetched = client.lyrics(songId);
-                runOnUiThread(() -> {
-                    if (!lyricsGeneration.isCurrent(token) || isFinishing() || isDestroyed() || client != app.client() || !songId.equals(displayedSongId)) return;
-                    lyrics = fetched;
-                    renderLyrics();
-                });
-            } catch (Exception failure) {
-                runOnUiThread(() -> {
-                    if (!lyricsGeneration.isCurrent(token) || isFinishing() || isDestroyed() || client != app.client() || !songId.equals(displayedSongId)) return;
-                    lyricPreview.setText("歌词暂时无法加载");
-                    showLyricMessage("歌词暂时无法加载，请检查电脑端连接。");
-                });
-            }
-        });
-    }
-
     private void showLyricMessage(String message) {
         lyricLines.removeAllViews();
         lyricViews.clear();
@@ -298,10 +331,12 @@ public final class PlayerActivity extends Activity {
     }
 
     private void renderLyrics() {
-        highlightedLine = -2;
-        if (lyrics == null || lyrics.lines().isEmpty()) {
-            lyricPreview.setText("这首歌暂无歌词");
-            showLyricMessage("这首歌暂无歌词。\n可在电脑的歌曲旁添加同名 .lrc 文件后重新扫描。");
+        highlightedLine = -2; followedLine = -2; followAfter = 0;
+        if (displayedLyrics == null || displayedLyrics.status != LyricState.Status.READY) {
+            String message = displayedLyrics == null ? "选择一首歌开始播放" : displayedLyrics.message();
+            lyricPreview.setText(message);
+            showLyricMessage(message + (displayedLyrics != null && displayedLyrics.status == LyricState.Status.MISSING
+                    ? "\n可在电脑歌曲旁添加同名 .lrc，扫描后点击重新读取歌词。" : ""));
             return;
         }
         lyricLines.removeAllViews();
@@ -310,6 +345,13 @@ public final class PlayerActivity extends Activity {
             TextView view = UiKit.text(this, line.text(), 17, UiKit.MUTED, false);
             view.setGravity(Gravity.CENTER);
             view.setPadding(0, UiKit.dp(this, 10), 0, UiKit.dp(this, 10));
+            if (lyrics.synced()) {
+                view.setMinHeight(UiKit.dp(this, 48));
+                view.setContentDescription(line.text() + "，点击定位到这一句");
+                view.setOnClickListener(ignored -> {
+                    followAfter = 0; followedLine = -2; PlayerService.seek(this, line.startMs());
+                });
+            }
             lyricLines.addView(view, new LinearLayout.LayoutParams(-1, -2));
             lyricViews.add(view);
         }
@@ -319,27 +361,30 @@ public final class PlayerActivity extends Activity {
     private void updateActiveLyric(int positionMs) {
         if (lyrics == null || lyrics.lines().isEmpty()) return;
         int active = lyrics.activeLine(positionMs);
-        if (active == highlightedLine) return;
-        if (highlightedLine >= 0 && highlightedLine < lyricViews.size()) {
+        if (active != highlightedLine && highlightedLine >= 0 && highlightedLine < lyricViews.size()) {
             lyricViews.get(highlightedLine).setTextColor(UiKit.MUTED);
             lyricViews.get(highlightedLine).setTextSize(17);
         }
-        highlightedLine = active;
         if (active >= 0) {
             TextView current = lyricViews.get(active);
-            current.setTextColor(UiKit.TEXT);
-            current.setTextSize(21);
-            lyricPreview.setText(lyrics.lines().get(active).text());
-            if (showingLyrics) lyricsScroll.post(() -> lyricsScroll.smoothScrollTo(0,
-                    Math.max(0, current.getTop() - lyricsScroll.getHeight() / 2)));
+            if (active != highlightedLine) {
+                current.setTextColor(UiKit.ACCENT); current.setTextSize(21);
+                lyricPreview.setText(lyrics.lines().get(active).text());
+            }
+            if (showingLyrics && active != followedLine && SystemClock.elapsedRealtime() >= followAfter) {
+                followedLine = active;
+                LyricState expected = displayedLyrics;
+                lyricsScroll.post(() -> { if (!isDestroyed() && displayedLyrics == expected) lyricsScroll.smoothScrollTo(0,
+                        Math.max(0, current.getTop() - lyricsScroll.getHeight() / 2 + current.getHeight() / 2)); });
+            }
         } else {
-            lyricPreview.setText(lyrics.synced() ? "歌词即将开始" : "歌词已加载，点开查看");
+            text(lyricPreview, lyrics.synced() ? "歌词即将开始" : "静态歌词 · 无逐句时间");
         }
+        highlightedLine = active;
     }
 
     @Override protected void onDestroy() {
         handler.removeCallbacksAndMessages(null);
-        lyricsGeneration.next();
         if (queueDialog != null) { queueDialog.dismiss(); queueDialog = null; }
         if (volumeDialog != null) { volumeDialog.dismiss(); volumeDialog = null; }
         super.onDestroy();

@@ -5,6 +5,16 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public final class AndroidXmlCompatibilityTest {
+    @Test public void testNormalizesRealStructuredLyricShapeOnAndroidParser() throws Exception {
+        String xml = "<subsonic-response xmlns='http://subsonic.org/restapi' status='ok'><lyricsList>"
+                + "<structuredLyrics synced='true' lang='und'><line start='2000'>Later fixture</line>"
+                + "<line start='1000'>First fixture</line><line start='1000'>Translation fixture</line>"
+                + "<line>Untimed invalid fixture</line></structuredLyrics></lyricsList></subsonic-response>";
+        Lyrics lyrics = SubsonicXml.lyrics(xml);
+        assertEquals(2, lyrics.lines().size());
+        assertEquals("First fixture\nTranslation fixture", lyrics.lines().get(0).text());
+        assertEquals(0, lyrics.activeLine(1999));
+    }
     @Test public void testParsesNavidromeErrorResponseOnAndroid() throws Exception {
         String xml = "<subsonic-response xmlns='http://subsonic.org/restapi' status='failed' "
                 + "version='1.16.1'><error code='40' message='Wrong username or password'/>"

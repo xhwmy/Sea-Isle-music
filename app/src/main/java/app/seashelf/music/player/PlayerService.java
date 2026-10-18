@@ -32,6 +32,7 @@ import androidx.media3.exoplayer.analytics.AnalyticsListener;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
 import app.seashelf.music.SeaShelfApp;
 import app.seashelf.music.api.Song;
+import app.seashelf.music.api.Lyrics;
 import app.seashelf.music.api.SubsonicClient;
 import app.seashelf.music.ui.PlayerActivity;
 import java.io.Serializable;
@@ -57,6 +58,8 @@ public final class PlayerService extends Service {
     public static final String ACTION_REMOVE = "app.seashelf.music.REMOVE";
     public static final String ACTION_PLAY_NEXT = "app.seashelf.music.PLAY_NEXT";
     public static final String ACTION_STOP = "app.seashelf.music.STOP";
+    public static final String ACTION_SHOW_FLOATING = "app.seashelf.music.SHOW_FLOATING";
+    public static final String ACTION_RELOAD_LYRICS = "app.seashelf.music.RELOAD_LYRICS";
     private static final String CHANNEL = "music_playback";
     private static final int NOTIFICATION_ID = 1001;
     private static volatile Snapshot last = Snapshot.empty();
@@ -66,7 +69,9 @@ public final class PlayerService extends Service {
     private volatile boolean destroyed;
     private volatile boolean foreground;
     private PlaybackQueue queue;
-    private SubsonicClient owner;
+    private volatile SubsonicClient owner;
+    private final LyricRequests lyricRequests = new LyricRequests();
+    private FloatingPlayerWindow floatingWindow;
     private PlaybackSessionStore store;
     private PlaybackSessionStore.Lease lease;
     private String accountKey;
@@ -109,7 +114,7 @@ public final class PlayerService extends Service {
     }
     public static void command(Context context, String action) {
         Intent command = new Intent(context, PlayerService.class).setAction(action);
-        if (ACTION_PLAY.equals(action) || ACTION_RETRY.equals(action)
+        if (ACTION_PLAY.equals(action) || ACTION_RETRY.equals(action) || ACTION_SHOW_FLOATING.equals(action)
                 || (ACTION_TOGGLE.equals(action) && !last.playRequested)) context.startForegroundService(command);
         else context.startService(command);
     }
@@ -135,6 +140,7 @@ public final class PlayerService extends Service {
         audio = (AudioManager) getSystemService(AUDIO_SERVICE);
         audioOutput = AudioOutput.androidOutput();
         volumeSettings = app().volumeSettings();
+        floatingWindow = new FloatingPlayerWindow(this, () -> !destroyed && hasOwner());
         volumeListener = () -> playback.post(() -> {
             if (!destroyed) syncVolumeSettings();
         });
@@ -186,7 +192,7 @@ public final class PlayerService extends Service {
                 if (playing && SystemClock.elapsedRealtime() - lastPersist >= 5000) {
                     persist(); publishSystemState(last);
                 }
-            } else if (owner != null) { intentState.stop(); releasePlayer(); last = Snapshot.empty(); }
+            } else if (owner != null) { intentState.stop(); releasePlayer(); lyricRequests.clear(); last = Snapshot.empty(); }
             playback.postDelayed(this, 400);
         }
     };
@@ -210,7 +216,8 @@ public final class PlayerService extends Service {
         if (command != null) {
             String action = command.getAction();
             if (ACTION_QUEUE.equals(action) || ACTION_PLAY.equals(action) || ACTION_RETRY.equals(action)
-                    || ACTION_TOGGLE.equals(action) || ACTION_SELECT.equals(action)) ensureForeground();
+                    || ACTION_TOGGLE.equals(action) || ACTION_SELECT.equals(action)
+                    || (ACTION_SHOW_FLOATING.equals(action) && last.song != null)) ensureForeground();
         }
         playback.post(() -> { if (!destroyed) handleCommand(command); });
         return START_NOT_STICKY;
@@ -242,6 +249,8 @@ public final class PlayerService extends Service {
         }
         if (queue == null || queue.current() == null) { stopSelf(); return; }
         switch (action) {
+            case ACTION_SHOW_FLOATING: ensureForeground(); floatingWindow.show(); break;
+            case ACTION_RELOAD_LYRICS: loadLyrics(true); update(false); break;
             case ACTION_TOGGLE: if (intentState.wantsPlay()) pause(); else resume(); break;
             case ACTION_PLAY: resume(); break;
             case ACTION_PAUSE: pause(); break;
@@ -276,7 +285,7 @@ public final class PlayerService extends Service {
         else update();
     }
     private void clearQueue() {
-        editedQueue(); intentState.stop(); releasePlayer(); queue = null; error = "";
+        editedQueue(); intentState.stop(); releasePlayer(); queue = null; error = ""; lyricRequests.clear();
         store.clear(accountKey); lease = store.activate(accountKey);
         update(false); stopForeground(STOP_FOREGROUND_REMOVE); foreground = false;
         ((NotificationManager) getSystemService(NOTIFICATION_SERVICE)).cancel(NOTIFICATION_ID);
@@ -308,6 +317,22 @@ public final class PlayerService extends Service {
         if (!store.isValid(lease)) lease = store.activate(accountKey);
         long request = intentState.begin(play, position);
         prepareSong(request, false);
+    }
+    private void loadLyrics(boolean reload) {
+        if (!hasOwner() || queue == null || queue.current() == null) { lyricRequests.clear(); return; }
+        final SubsonicClient client = owner;
+        LyricRequests.Ticket ticket = lyricRequests.select(client, queue.current().id(), reload);
+        if (ticket == null) return;
+        app().network().execute(() -> {
+            Lyrics result = null; boolean failed = false;
+            try { result = client.lyrics(ticket.songId); } catch (Exception unavailable) { failed = true; }
+            final Lyrics fetched = result; final boolean error = failed;
+            playback.post(() -> {
+                if (destroyed || !hasOwner() || owner != client || queue == null || queue.current() == null
+                        || !ticket.songId.equals(queue.current().id())) return;
+                if (lyricRequests.complete(ticket, fetched, error)) update(false);
+            });
+        });
     }
     private void prepareSong(long request, boolean original) {
         if (destroyed || !hasOwner() || !intentState.isCurrent(request) || queue == null) return;
@@ -519,7 +544,7 @@ public final class PlayerService extends Service {
         return new Snapshot(queue == null ? null : queue.current(), playing, buffering, preparing, seekState.active(),
                 position, duration, error, intentState.wantsPlay(), bufferedPercent, queue == null ? -1 : queue.index(),
                 queue == null ? Collections.emptyList() : queue.songs(), queue == null ? PlaybackMode.LIST_LOOP : queue.mode(),
-                source, queueLoading, queueError);
+                source, queueLoading, queueError, lyricRequests.state());
     }
     private int currentBufferedPercent(int duration) {
         return duration > 0 ? (int) Math.min(100L, player.getBufferedPosition() * 100L / duration) : 0;
@@ -527,6 +552,7 @@ public final class PlayerService extends Service {
     private void update() { update(true); }
     private void update(boolean save) {
         if (destroyed || !hasOwner()) return;
+        loadLyrics(false);
         Snapshot state = capture(); last = state; publishSystemState(state);
         if (save) persist();
     }
@@ -589,7 +615,7 @@ public final class PlayerService extends Service {
         }
     }
     @Override public void onDestroy() {
-        destroyed = true; unregisterReceiver(noisyReceiver);
+        destroyed = true; unregisterReceiver(noisyReceiver); floatingWindow.destroy();
         volumeSettings.detach(volumeListener);
         playback.removeCallbacksAndMessages(null);
         playback.post(() -> {
@@ -611,13 +637,15 @@ public final class PlayerService extends Service {
         public final String error, source, queueError;
         public final List<Song> queue;
         public final PlaybackMode mode;
+        public final LyricState lyrics;
         private Snapshot(Song song, boolean playing, boolean buffering, boolean preparing, boolean seeking,
                          int positionMs, int durationMs, String error, boolean playRequested, int bufferedPercent,
-                         int index, List<Song> queue, PlaybackMode mode, String source, boolean queueLoading, String queueError) {
+                         int index, List<Song> queue, PlaybackMode mode, String source, boolean queueLoading, String queueError, LyricState lyrics) {
             this.song = song; this.playing = playing; this.buffering = buffering; this.preparing = preparing; this.seeking = seeking;
             this.positionMs = positionMs; this.durationMs = durationMs; this.error = error; this.playRequested = playRequested;
             this.bufferedPercent = bufferedPercent; this.queuePosition = index + 1; this.queue = queue; this.queueSize = queue.size();
             this.canNext = queueSize > 1; this.mode = mode; this.source = source; this.queueLoading = queueLoading; this.queueError = queueError;
+            this.lyrics = lyrics;
         }
         public String statusText() {
             if (song == null) return "选择一首歌开始播放";
@@ -630,7 +658,7 @@ public final class PlayerService extends Service {
         }
         private static Snapshot empty() {
             return new Snapshot(null, false, false, false, false, 0, 0, "", false, 0, -1,
-                    Collections.emptyList(), PlaybackMode.LIST_LOOP, "音乐库", false, "");
+                    Collections.emptyList(), PlaybackMode.LIST_LOOP, "音乐库", false, "", LyricState.empty());
         }
     }
 }
