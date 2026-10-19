@@ -98,6 +98,17 @@ def main():
                                              capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=30)
                     assert checked.returncode == 0, 'Transcoded audio failed full decode'
                     assert len(body) < source.stat().st_size, 'No size reduction'
+                    with opener.open(api('stream', id=song.attrib['id'], format='mp3', maxBitRate='96'), timeout=30) as response:
+                        mobile_body = response.read()
+                        assert response.headers.get('Content-Type', '').startswith('audio/')
+                    mobile_output = run / 'stream-mobile.mp3'
+                    mobile_output.write_bytes(mobile_body)
+                    mobile_checked = subprocess.run([str(encoder), '-v', 'error', '-i', str(mobile_output), '-f', 'null', '-'],
+                                                    capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW, timeout=30)
+                    assert mobile_checked.returncode == 0, '96 kbps audio failed full decode'
+                    assert len(mobile_body) < len(body), 'Metered stream was not smaller than 192 kbps'
+                    item['mobile_bytes'] = len(mobile_body)
+                    item['mobile_decode_ok'] = True
                     request = urllib.request.Request(api('stream', id=song.attrib['id'], format='raw'),
                                                      headers={'Range': 'bytes=0-1023'})
                     with opener.open(request, timeout=10) as response:

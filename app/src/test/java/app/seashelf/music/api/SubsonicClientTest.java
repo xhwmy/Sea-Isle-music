@@ -77,6 +77,9 @@ public class SubsonicClientTest {
         assertTrue(url.contains("id=song-1"));
         assertTrue(url.contains("format=mp3"));
         assertTrue(url.contains("maxBitRate=192"));
+        String metered = client.streamUrl("song-1", 96).toString();
+        assertTrue(metered.contains("maxBitRate=96"));
+        assertFalse(metered.contains("maxBitRate=192"));
         String original = client.originalStreamUrl("song-1").toString();
         assertTrue(original.contains("format=raw"));
         assertFalse(original.contains("maxBitRate="));

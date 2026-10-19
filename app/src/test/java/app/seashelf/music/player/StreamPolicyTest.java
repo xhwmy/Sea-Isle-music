@@ -4,6 +4,15 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public final class StreamPolicyTest {
+    @Test public void meteredNetworkUsesSmallerStreamWithSeparateCacheIdentity() {
+        assertEquals(96, StreamPolicy.bitrateForMetered(true));
+        assertEquals(192, StreamPolicy.bitrateForMetered(false));
+        assertEquals(StreamPolicy.MP3_PROFILE, StreamPolicy.profileForBitrate(192));
+        assertNotEquals(StreamPolicy.MP3_PROFILE, StreamPolicy.profileForBitrate(96));
+        assertNotEquals(StreamPolicy.cacheKey("account", "song", StreamPolicy.profileForBitrate(96)),
+                StreamPolicy.cacheKey("account", "song", StreamPolicy.profileForBitrate(192)));
+    }
+
     @Test public void streamCacheIdentityExistsIndependentlyOfRotatingSignedUrls() {
         String identity = StreamPolicy.cacheKey("account-a", "song-1", StreamPolicy.MP3_PROFILE);
         assertEquals(identity, StreamPolicy.cacheKey("account-a", "song-1", StreamPolicy.MP3_PROFILE));

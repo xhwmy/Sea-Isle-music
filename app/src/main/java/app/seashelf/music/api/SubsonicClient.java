@@ -96,7 +96,12 @@ public final class SubsonicClient {
     }
 
     public URL streamUrl(String songId) {
-        return url("stream", params("id", songId, "format", "mp3", "maxBitRate", "192"));
+        return streamUrl(songId, 192);
+    }
+
+    public URL streamUrl(String songId, int maxBitRate) {
+        if (maxBitRate != 96 && maxBitRate != 192) throw new IllegalArgumentException("Unsupported MP3 bitrate");
+        return url("stream", params("id", songId, "format", "mp3", "maxBitRate", Integer.toString(maxBitRate)));
     }
 
     public URL originalStreamUrl(String songId) {

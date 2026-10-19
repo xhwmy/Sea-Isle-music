@@ -16,6 +16,7 @@ import android.media.AudioManager;
 import android.media.MediaMetadata;
 import android.media.session.MediaSession;
 import android.media.session.PlaybackState;
+import android.net.ConnectivityManager;
 import android.os.Handler;
 import android.os.HandlerThread;
 import android.os.IBinder;
@@ -403,10 +404,12 @@ public final class PlayerService extends Service {
                 }
             });
             // The signed URI exists only in memory. Cache identity excludes all URL/auth parameters.
-            String profile = original ? StreamPolicy.ORIGINAL_PROFILE : StreamPolicy.MP3_PROFILE;
+            int bitrate = StreamPolicy.bitrateForMetered(((ConnectivityManager)
+                    getSystemService(CONNECTIVITY_SERVICE)).isActiveNetworkMetered());
+            String profile = original ? StreamPolicy.ORIGINAL_PROFILE : StreamPolicy.profileForBitrate(bitrate);
             MediaItem item = new MediaItem.Builder()
                     .setUri((original ? owner.originalStreamUrl(queue.current().id())
-                            : owner.streamUrl(queue.current().id())).toString())
+                            : owner.streamUrl(queue.current().id(), bitrate)).toString())
                     .setCustomCacheKey(StreamPolicy.cacheKey(accountKey, queue.current().id(), profile)).build();
             current.setMediaSource(new ProgressiveMediaSource.Factory(PrivateAudioCache.factory(this), StreamExtractors.create(original))
                     .setContinueLoadingCheckIntervalBytes(64 * 1024)

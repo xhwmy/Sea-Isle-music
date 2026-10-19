@@ -8,10 +8,19 @@ import java.util.Locale;
 /** Identity and retry rules contain no URL, authentication token or Android state. */
 public final class StreamPolicy {
     public static final String MP3_PROFILE = "mp3-192-v1";
+    public static final String METERED_MP3_PROFILE = "mp3-96-v1";
     public static final String ORIGINAL_PROFILE = "original-v1";
     public enum Failure { NETWORK, HTTP, INVALID_RESPONSE, UNSUPPORTED_CONTAINER, UNSUPPORTED_CODEC, OTHER }
 
     private StreamPolicy() { }
+
+    public static int bitrateForMetered(boolean metered) { return metered ? 96 : 192; }
+
+    public static String profileForBitrate(int bitrate) {
+        if (bitrate == 96) return METERED_MP3_PROFILE;
+        if (bitrate == 192) return MP3_PROFILE;
+        throw new IllegalArgumentException("Unsupported MP3 bitrate");
+    }
 
     public static String cacheKey(String account, String songId, String profile) {
         try {
