@@ -4,6 +4,23 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public final class StreamPolicyTest {
+    @Test public void mobilePlaybackKeepsADeepRollingReadAheadWindow() {
+        StreamPolicy.BufferWindow window = StreamPolicy.bufferWindow();
+        assertTrue(window.minMs >= 90000);
+        assertTrue(window.maxMs >= window.minMs);
+        assertTrue(window.startMs >= 3000);
+        assertTrue(window.rebufferMs >= window.startMs);
+    }
+
+    @Test public void onlyTemporaryTransportAndGatewayFailuresAutoReconnect() {
+        assertTrue(StreamPolicy.mayReconnect(StreamPolicy.Failure.NETWORK, 0));
+        assertTrue(StreamPolicy.mayReconnect(StreamPolicy.Failure.HTTP, 502));
+        assertTrue(StreamPolicy.mayReconnect(StreamPolicy.Failure.HTTP, 504));
+        assertFalse(StreamPolicy.mayReconnect(StreamPolicy.Failure.HTTP, 401));
+        assertFalse(StreamPolicy.mayReconnect(StreamPolicy.Failure.HTTP, 404));
+        assertFalse(StreamPolicy.mayReconnect(StreamPolicy.Failure.INVALID_RESPONSE, 0));
+    }
+
     @Test public void meteredNetworkUsesSmallerStreamWithSeparateCacheIdentity() {
         assertEquals(96, StreamPolicy.bitrateForMetered(true));
         assertEquals(192, StreamPolicy.bitrateForMetered(false));

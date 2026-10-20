@@ -12,7 +12,22 @@ public final class StreamPolicy {
     public static final String ORIGINAL_PROFILE = "original-v1";
     public enum Failure { NETWORK, HTTP, INVALID_RESPONSE, UNSUPPORTED_CONTAINER, UNSUPPORTED_CODEC, OTHER }
 
+    /** ExoPlayer keeps fetching while buffered audio is below minMs, then resumes as it is consumed. */
+    public static final class BufferWindow {
+        public final int minMs, maxMs, startMs, rebufferMs;
+        private BufferWindow(int minMs, int maxMs, int startMs, int rebufferMs) {
+            this.minMs = minMs; this.maxMs = maxMs; this.startMs = startMs; this.rebufferMs = rebufferMs;
+        }
+    }
+
     private StreamPolicy() { }
+
+    public static BufferWindow bufferWindow() { return new BufferWindow(90000, 180000, 3000, 8000); }
+
+    public static boolean mayReconnect(Failure failure, int httpStatus) {
+        return failure == Failure.NETWORK || failure == Failure.HTTP
+                && (httpStatus == 429 || httpStatus >= 500 && httpStatus <= 599);
+    }
 
     public static int bitrateForMetered(boolean metered) { return metered ? 96 : 192; }
 

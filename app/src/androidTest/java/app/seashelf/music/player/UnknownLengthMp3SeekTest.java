@@ -13,6 +13,7 @@ import androidx.media3.extractor.PositionHolder;
 import androidx.media3.extractor.SeekMap;
 import androidx.media3.extractor.TrackOutput;
 import androidx.media3.extractor.mp3.Mp3Extractor;
+import androidx.media3.extractor.text.SubtitleTranscodingExtractor;
 import junit.framework.TestCase;
 
 /** Valid CBR MP3 frame headers, deliberately no Xing metadata and no input length. */
@@ -20,8 +21,11 @@ import junit.framework.TestCase;
 public final class UnknownLengthMp3SeekTest extends TestCase {
     public void testTranscodedColdMp3ExposesSeekPointsBeforeEntireDownload() throws Exception {
         Mp3Extractor mp3 = null;
-        for (Extractor extractor : StreamExtractors.create(false).createExtractors())
-            if (extractor instanceof Mp3Extractor) mp3 = (Mp3Extractor) extractor;
+        for (Extractor extractor : StreamExtractors.create(false).createExtractors()) {
+            Extractor underlying = extractor instanceof SubtitleTranscodingExtractor
+                    ? ((SubtitleTranscodingExtractor) extractor).getUnderlyingImplementation() : extractor;
+            if (underlying instanceof Mp3Extractor) mp3 = (Mp3Extractor) underlying;
+        }
         assertNotNull(mp3);
         byte[] bytes = new byte[626 * 8];
         for (int offset = 0; offset < bytes.length; offset += 626) {

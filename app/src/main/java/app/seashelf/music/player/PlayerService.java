@@ -91,6 +91,7 @@ public final class PlayerService extends Service {
     private boolean preparing;
     private boolean playing;
     private boolean buffering;
+    private final PlaybackRecovery recovery = new PlaybackRecovery();
     private final PlaybackSeek seekState = new PlaybackSeek();
     private int bufferedPercent;
     private String error = "";
@@ -316,6 +317,7 @@ public final class PlayerService extends Service {
     private void startSong(boolean play, int position) {
         if (queue == null || queue.current() == null || !hasOwner()) return;
         if (!store.isValid(lease)) lease = store.activate(accountKey);
+        recovery.reset();
         long request = intentState.begin(play, position);
         prepareSong(request, false);
     }
@@ -340,9 +342,10 @@ public final class PlayerService extends Service {
         releasePlayer(); error = ""; preparing = true; buffering = true; update();
         long started = SystemClock.elapsedRealtime();
         try {
+            StreamPolicy.BufferWindow window = StreamPolicy.bufferWindow();
             ExoPlayer current = new ExoPlayer.Builder(this).setLooper(playback.getLooper())
                     .setLoadControl(new DefaultLoadControl.Builder()
-                            .setBufferDurationsMs(15000, 45000, 1000, 2000)
+                            .setBufferDurationsMs(window.minMs, window.maxMs, window.startMs, window.rebufferMs)
                             .setPrioritizeTimeOverSizeThresholds(true).build()).build();
             player = current;
             current.setVolume(audioOutput.playerVolume());
@@ -390,12 +393,31 @@ public final class PlayerService extends Service {
                 }
                 @Override public void onIsPlayingChanged(boolean active) {
                     if (!isCurrent(current, request)) return;
+                    if (active) recovery.playingStarted(SystemClock.elapsedRealtime());
+                    else recovery.playingStopped(SystemClock.elapsedRealtime());
                     playing = active; update(false);
                 }
                 @Override public void onPlayerError(PlaybackException failure) {
                     if (!isCurrent(current, request)) return;
                     Log.w("SeaShelfPlayback", "media_error=" + failure.errorCode + " original=" + original);
                     StreamPolicy.Failure kind = failureKind(failure);
+                    recovery.playingStopped(SystemClock.elapsedRealtime());
+                    if (intentState.wantsPlay() && StreamPolicy.mayReconnect(kind, httpStatus(failure))) {
+                        long delay = recovery.nextDelayMs();
+                        if (delay >= 0) {
+                            capture();
+                            releasePlayer(); preparing = true; buffering = true;
+                            error = "网络中断，正在自动重连…"; update(false);
+                            Log.i("SeaShelfPlayback", "reconnect_delay_ms=" + delay);
+                            playback.postDelayed(() -> {
+                                if (!destroyed && hasOwner() && intentState.isCurrent(request) && intentState.wantsPlay())
+                                    prepareSong(request, original);
+                            }, delay);
+                            return;
+                        }
+                        fail("网络连接多次中断，请检查电脑服务和网络后重试。");
+                        return;
+                    }
                     if (StreamPolicy.mayUseOriginal(original, kind)) {
                         capture(); prepareSong(request, true);
                     } else if (kind == StreamPolicy.Failure.INVALID_RESPONSE) {
@@ -439,6 +461,12 @@ public final class PlayerService extends Service {
                 || failure.errorCode == PlaybackException.ERROR_CODE_DECODING_FORMAT_EXCEEDS_CAPABILITIES)
             return StreamPolicy.Failure.UNSUPPORTED_CODEC;
         return StreamPolicy.Failure.OTHER;
+    }
+    private static int httpStatus(PlaybackException failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause())
+            if (cause instanceof HttpDataSource.InvalidResponseCodeException)
+                return ((HttpDataSource.InvalidResponseCodeException) cause).responseCode;
+        return 0;
     }
     private boolean isCurrent(ExoPlayer candidate, long request) {
         return !destroyed && hasOwner() && player == candidate && intentState.isCurrent(request);
