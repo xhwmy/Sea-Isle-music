@@ -30,25 +30,25 @@
 
 **Files:** `StreamPolicy.java`, `StreamPolicyTest.java`, `PlaybackQueue.java`, `PlaybackQueueTest.java`, `PlayerService.java`.
 
-- [ ] Add failing unit tests for the 8–10 minute buffer window, 3-second rebuffer threshold, and queue lookahead in sequential, repeat, and shuffle modes.
-- [ ] Run focused tests and observe the expected failures.
-- [ ] Implement buffer policy and lookahead; use them in playback.
-- [ ] Run focused and full unit tests.
+- [x] Add failing unit tests for the 8–10 minute buffer window, 3-second rebuffer threshold, and queue lookahead in sequential, repeat, and shuffle modes.
+- [x] Run focused tests and observe the expected failures.
+- [x] Implement buffer policy and lookahead; use them in playback.
+- [x] Run focused and full unit tests.
 
 ### Task 2: Next-song disk prefetch
 
-**Files:** `NextSongPrefetcher.java`, `PlayerService.java`, `PrivateAudioCache.java`, `NextSongPrefetcherTest.java`, `AudioCacheIntegrationTest.java`.
+**Files:** `PrefetchScheduler.java`, `PlayerService.java`, `PrivateAudioCache.java`, `PrefetchSchedulerTest.java`, `AudioCacheIntegrationTest.java`.
 
-- [ ] Add failing tests for eligibility, duplicate suppression, cancellation, and cache-writer reuse.
-- [ ] Run focused tests and observe expected failures.
-- [ ] Implement one cancelable background prefetch using the existing cache and hashed key.
-- [ ] Run focused and full unit tests; compile Android instrumentation tests.
+- [x] Add failing tests for eligibility, duplicate suppression, cancellation, and cache-writer reuse.
+- [x] Run focused tests and observe expected failures.
+- [x] Implement one cancelable background prefetch using the existing cache and hashed key.
+- [x] Run focused and full unit tests; compile Android instrumentation tests.
 
 ### Task 3: Server cache and release
 
 **Files:** `../Navidrome/navidrome.toml`, `app/build.gradle`, `README.md`.
 
-- [ ] Check disk free space and current server/task state, then set `TranscodingCacheSize = "1GB"`.
-- [ ] Restart the existing Navidrome task and verify effective config plus local `/ping`.
-- [ ] Build signed APK, run lint/unit tests, and install/test on an authorized connected phone if available.
-- [ ] Commit the app changes and push the previously authorized GitHub remote, trying direct network first and existing proxy only if direct push fails.
+- [x] Check disk free space and current server/task state, then set `TranscodingCacheSize = "1GB"`.
+- [x] Restart the existing Navidrome task and verify effective config plus local `/ping`.
+- [x] Build signed APK and run lint/unit tests. No phone was connected, so device tests and installation remain pending.
+- [x] Commit the app changes and push the previously authorized GitHub remote over the current network.
