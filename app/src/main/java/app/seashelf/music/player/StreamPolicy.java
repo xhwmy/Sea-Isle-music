@@ -22,7 +22,12 @@ public final class StreamPolicy {
 
     private StreamPolicy() { }
 
-    public static BufferWindow bufferWindow() { return new BufferWindow(90000, 180000, 3000, 8000); }
+    public static BufferWindow bufferWindow() { return new BufferWindow(480000, 600000, 3000, 3000); }
+
+    /** Start competing network traffic only after the playing song has effectively reached EOF. */
+    public static boolean readyToPrefetchNext(int durationSeconds, long bufferedPositionMs) {
+        return durationSeconds > 0 && bufferedPositionMs >= durationSeconds * 1000L - 1000L;
+    }
 
     public static boolean mayReconnect(Failure failure, int httpStatus) {
         return failure == Failure.NETWORK || failure == Failure.HTTP

@@ -81,6 +81,22 @@ public final class AudioCacheIntegrationTest extends TestCase {
         } finally { cache.release(); database.close(); delete(directory); }
     }
 
+    public void testNextSongPrefetchIsReusedByPlaybackWithoutPersistingSignedUrls() throws Exception {
+        File directory = new File(getContext().getCacheDir(), "audio-prefetch-" + System.nanoTime());
+        StandaloneDatabaseProvider database = new StandaloneDatabaseProvider(getContext());
+        SimpleCache cache = new SimpleCache(directory, new LeastRecentlyUsedCacheEvictor(1024 * 1024), database);
+        try (Fixture fixture = new Fixture()) {
+            String key = StreamPolicy.cacheKey("account-a", "next-song", StreamPolicy.METERED_MP3_PROFILE);
+            PrivateAudioCache.prefetchTask(cache, http(), fixture.url("/signed?s=prefetch-secret"), key).run();
+            assertEquals(fixture.audio.length, cache.getCachedBytes(key, 0, fixture.audio.length));
+            int requestsAfterPrefetch = fixture.requests.get();
+            assertTrue(Arrays.equals(fixture.audio,
+                    read(PrivateAudioCache.cachedFactory(cache, http()), fixture.url("/signed?s=rotated-secret"), key)));
+            assertEquals(requestsAfterPrefetch, fixture.requests.get());
+            assertNull(ContentMetadata.getRedirectedUri(cache.getContentMetadata(key)));
+        } finally { cache.release(); database.close(); delete(directory); }
+    }
+
     private static DefaultHttpDataSource.Factory http() {
         return new DefaultHttpDataSource.Factory().setContentTypePredicate(StreamPolicy::acceptsContentType)
                 .setConnectTimeoutMs(3000).setReadTimeoutMs(3000);

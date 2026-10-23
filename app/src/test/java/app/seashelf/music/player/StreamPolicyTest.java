@@ -4,12 +4,12 @@ import org.junit.Test;
 import static org.junit.Assert.*;
 
 public final class StreamPolicyTest {
-    @Test public void mobilePlaybackKeepsADeepRollingReadAheadWindow() {
+    @Test public void typicalSongsAreBufferedToEndBeforeMovingToNextTrack() {
         StreamPolicy.BufferWindow window = StreamPolicy.bufferWindow();
-        assertTrue(window.minMs >= 90000);
-        assertTrue(window.maxMs >= window.minMs);
-        assertTrue(window.startMs >= 3000);
-        assertTrue(window.rebufferMs >= window.startMs);
+        assertEquals(480000, window.minMs);
+        assertEquals(600000, window.maxMs);
+        assertEquals(3000, window.startMs);
+        assertEquals(3000, window.rebufferMs);
     }
 
     @Test public void onlyTemporaryTransportAndGatewayFailuresAutoReconnect() {
@@ -19,6 +19,14 @@ public final class StreamPolicyTest {
         assertFalse(StreamPolicy.mayReconnect(StreamPolicy.Failure.HTTP, 401));
         assertFalse(StreamPolicy.mayReconnect(StreamPolicy.Failure.HTTP, 404));
         assertFalse(StreamPolicy.mayReconnect(StreamPolicy.Failure.INVALID_RESPONSE, 0));
+    }
+
+    @Test public void nextSongWaitsUntilCurrentSongIsNearlyFullyCached() {
+        assertFalse(StreamPolicy.readyToPrefetchNext(0, 180000));
+        assertFalse(StreamPolicy.readyToPrefetchNext(180, 60000));
+        assertFalse(StreamPolicy.readyToPrefetchNext(180, 178000));
+        assertTrue(StreamPolicy.readyToPrefetchNext(180, 179000));
+        assertTrue(StreamPolicy.readyToPrefetchNext(180, 181000));
     }
 
     @Test public void meteredNetworkUsesSmallerStreamWithSeparateCacheIdentity() {

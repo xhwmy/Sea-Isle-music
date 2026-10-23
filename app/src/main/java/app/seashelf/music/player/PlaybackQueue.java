@@ -38,6 +38,21 @@ public final class PlaybackQueue {
     }
 
     public Song current() { return index < 0 ? null : items.get(index); }
+    /** Reserve shuffle's next random choice so disk prefetch and playback agree. */
+    public Song peekNext() {
+        if (current() == null || mode == PlaybackMode.SINGLE_PLAY || mode == PlaybackMode.REPEAT_ONE) return null;
+        if (mode == PlaybackMode.SEQUENTIAL && index == items.size() - 1) return null;
+        if (items.size() == 1) return null;
+        if (mode != PlaybackMode.SHUFFLE) return items.get((index + 1) % items.size());
+        if (plannedNext != null && find(plannedNext) >= 0 && !plannedNext.equals(current().id()))
+            return items.get(find(plannedNext));
+        if (historyIndex + 1 < history.size()) return items.get(find(history.get(historyIndex + 1)));
+        if (unvisited.isEmpty()) for (Song song : items) unvisited.add(song.id());
+        List<String> candidates = new ArrayList<>(unvisited);
+        if (candidates.size() > 1) candidates.remove(current().id());
+        plannedNext = candidates.get(random.nextInt(candidates.size()));
+        return items.get(find(plannedNext));
+    }
     public int index() { return index; }
     public List<Song> songs() { return snapshot; }
     public PlaybackMode mode() { return mode; }
@@ -65,6 +80,7 @@ public final class PlaybackQueue {
 
     public Song previous() {
         if (current() == null) return null;
+        plannedNext = null;
         if (mode == PlaybackMode.SHUFFLE) {
             if (historyIndex > 0) index = find(history.get(--historyIndex));
             else if (items.size() > 1) {
@@ -83,6 +99,7 @@ public final class PlaybackQueue {
     public boolean select(String id) {
         int selected = find(id);
         if (selected < 0 || selected == index) return false;
+        plannedNext = null;
         index = selected;
         if (mode == PlaybackMode.SHUFFLE) remember(id);
         return true;

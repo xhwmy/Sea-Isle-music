@@ -40,6 +40,9 @@ import java.io.Serializable;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.io.IOException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** The playback HandlerThread owns every ExoPlayer operation and every queue transition. */
 @SuppressLint("UnsafeOptInUsageError")
@@ -92,6 +95,10 @@ public final class PlayerService extends Service {
     private boolean playing;
     private boolean buffering;
     private final PlaybackRecovery recovery = new PlaybackRecovery();
+    private final ExecutorService prefetchWorker = Executors.newSingleThreadExecutor(task ->
+            new Thread(task, "SeaShelfAudioPrefetch"));
+    private final PrefetchScheduler prefetch = new PrefetchScheduler(prefetchWorker,
+            SystemClock::elapsedRealtime);
     private final PlaybackSeek seekState = new PlaybackSeek();
     private int bufferedPercent;
     private String error = "";
@@ -191,10 +198,11 @@ public final class PlayerService extends Service {
             audioOutput.verify(); publishVolumeState();
             if (hasOwner()) {
                 last = capture();
+                maybePrefetchNext();
                 if (playing && SystemClock.elapsedRealtime() - lastPersist >= 5000) {
                     persist(); publishSystemState(last);
                 }
-            } else if (owner != null) { intentState.stop(); releasePlayer(); lyricRequests.clear(); last = Snapshot.empty(); }
+            } else if (owner != null) { prefetch.cancel(); intentState.stop(); releasePlayer(); lyricRequests.clear(); last = Snapshot.empty(); }
             playback.postDelayed(this, 400);
         }
     };
@@ -262,7 +270,7 @@ public final class PlayerService extends Service {
             case ACTION_PREVIOUS: previous(); break;
             case ACTION_SEEK: doSeek(command.getIntExtra("position", 0)); break;
             case ACTION_MODE:
-                try { queue.setMode(PlaybackMode.valueOf(command.getStringExtra("mode"))); update(); }
+                try { prefetch.cancel(); queue.setMode(PlaybackMode.valueOf(command.getStringExtra("mode"))); update(); }
                 catch (IllegalArgumentException | NullPointerException ignored) { }
                 break;
             case ACTION_SELECT:
@@ -277,7 +285,7 @@ public final class PlayerService extends Service {
         }
     }
 
-    private void editedQueue() { queueRevision++; queueLoading = false; queueError = ""; }
+    private void editedQueue() { prefetch.cancel(); queueRevision++; queueLoading = false; queueError = ""; }
     private void remove(String id) {
         String selected = queue.current().id(); boolean play = intentState.wantsPlay();
         if (!queue.remove(id)) return;
@@ -316,6 +324,7 @@ public final class PlayerService extends Service {
 
     private void startSong(boolean play, int position) {
         if (queue == null || queue.current() == null || !hasOwner()) return;
+        prefetch.cancel();
         if (!store.isValid(lease)) lease = store.activate(accountKey);
         recovery.reset();
         long request = intentState.begin(play, position);
@@ -362,6 +371,10 @@ public final class PlayerService extends Service {
             current.addListener(new Player.Listener() {
                 @Override public void onPlaybackStateChanged(int state) {
                     if (!isCurrent(current, request)) return;
+                    if (state == Player.STATE_BUFFERING || state == Player.STATE_READY)
+                        Log.i("SeaShelfPlayback", "buffer_state=" + state + " ahead_ms="
+                                + Math.max(0, current.getBufferedPosition() - current.getCurrentPosition())
+                                + " loading=" + current.isLoading());
                     buffering = state == Player.STATE_BUFFERING;
                     playing = current.isPlaying();
                     if (state == Player.STATE_READY) {
@@ -393,12 +406,14 @@ public final class PlayerService extends Service {
                 }
                 @Override public void onIsPlayingChanged(boolean active) {
                     if (!isCurrent(current, request)) return;
+                    if (!active) prefetch.cancel();
                     if (active) recovery.playingStarted(SystemClock.elapsedRealtime());
                     else recovery.playingStopped(SystemClock.elapsedRealtime());
                     playing = active; update(false);
                 }
                 @Override public void onPlayerError(PlaybackException failure) {
                     if (!isCurrent(current, request)) return;
+                    prefetch.cancel();
                     Log.w("SeaShelfPlayback", "media_error=" + failure.errorCode + " original=" + original);
                     StreamPolicy.Failure kind = failureKind(failure);
                     recovery.playingStopped(SystemClock.elapsedRealtime());
@@ -468,6 +483,40 @@ public final class PlayerService extends Service {
                 return ((HttpDataSource.InvalidResponseCodeException) cause).responseCode;
         return 0;
     }
+    private void maybePrefetchNext() {
+        if (!playing || !prepared || player == null || queue == null || !hasOwner()) return;
+        Song current = queue.current();
+        if (current == null || !StreamPolicy.readyToPrefetchNext(
+                current.durationSeconds(), player.getBufferedPosition())) return;
+        Song following = queue.peekNext();
+        if (following == null) { prefetch.cancel(); return; }
+        try {
+            int bitrate = StreamPolicy.bitrateForMetered(((ConnectivityManager)
+                    getSystemService(CONNECTIVITY_SERVICE)).isActiveNetworkMetered());
+            String key = StreamPolicy.cacheKey(accountKey, following.id(), StreamPolicy.profileForBitrate(bitrate));
+            SubsonicClient client = owner;
+            if (prefetch.request(key, () -> {
+                PrefetchScheduler.Task download = PrivateAudioCache.prefetchTask(this,
+                        client.streamUrl(following.id(), bitrate).toString(), key);
+                return new PrefetchScheduler.Task() {
+                    @Override public void run() throws IOException {
+                        long started = SystemClock.elapsedRealtime();
+                        try {
+                            download.run();
+                            Log.i("SeaShelfPlayback", "prefetch_complete_ms="
+                                    + (SystemClock.elapsedRealtime() - started));
+                        } catch (IOException failure) {
+                            Log.w("SeaShelfPlayback", "prefetch_failed=" + failure.getClass().getSimpleName());
+                            throw failure;
+                        }
+                    }
+                    @Override public void cancel() { download.cancel(); }
+                };
+            })) Log.i("SeaShelfPlayback", "prefetch_started");
+        } catch (RuntimeException failure) {
+            Log.w("SeaShelfPlayback", "prefetch_setup_failed=" + failure.getClass().getSimpleName());
+        }
+    }
     private boolean isCurrent(ExoPlayer candidate, long request) {
         return !destroyed && hasOwner() && player == candidate && intentState.isCurrent(request);
     }
@@ -475,6 +524,7 @@ public final class PlayerService extends Service {
         capture(); intentState.stop(); releasePlayer(); error = message; update();
     }
     private void pauseAudio() {
+        prefetch.cancel();
         if (player != null) {
             try { player.pause(); } catch (IllegalStateException ignored) { }
         }
@@ -638,6 +688,7 @@ public final class PlayerService extends Service {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
     }
     private void releasePlayer() {
+        prefetch.cancel();
         bufferedPercent = 0; prepared = false; preparing = false; playing = false; buffering = false; seekState.cancel();
         audioOutput.release(); publishVolumeState();
         if (player != null) {
@@ -647,6 +698,7 @@ public final class PlayerService extends Service {
     }
     @Override public void onDestroy() {
         destroyed = true; unregisterReceiver(noisyReceiver); floatingWindow.destroy();
+        prefetch.close(); prefetchWorker.shutdownNow();
         volumeSettings.detach(volumeListener);
         playback.removeCallbacksAndMessages(null);
         playback.post(() -> {

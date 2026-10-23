@@ -17,7 +17,28 @@ public class PlaybackQueueTest {
     }
     @Test public void listLoopIsDefaultAndWrapsAtCompletion() {
         PlaybackQueue q = queue(); q.select("3");
+        assertEquals("1", q.peekNext().id());
         assertEquals("1", q.next().id());
+    }
+    @Test public void lookaheadFollowsAutomaticCompletionRulesAndQueueEdits() {
+        PlaybackQueue q = queue();
+        assertEquals("2", q.peekNext().id());
+        q.playNext("3"); assertEquals("3", q.peekNext().id());
+        q.remove("3"); assertEquals("2", q.peekNext().id());
+        q.setMode(PlaybackMode.SEQUENTIAL); q.select("2"); assertNull(q.peekNext());
+        q.setMode(PlaybackMode.REPEAT_ONE); assertNull(q.peekNext());
+        q.setMode(PlaybackMode.SINGLE_PLAY); assertNull(q.peekNext());
+    }
+    @Test public void shuffleLookaheadReservesTheSongActuallyPlayed() {
+        PlaybackQueue q = queue(); q.setMode(PlaybackMode.SHUFFLE);
+        for (int i = 0; i < 9; i++) {
+            String planned = q.peekNext().id();
+            assertEquals(planned, q.peekNext().id());
+            assertEquals(planned, q.next().id());
+        }
+        PlaybackQueue edited = queue(); edited.setMode(PlaybackMode.SHUFFLE);
+        edited.playNext("3"); assertEquals("3", edited.peekNext().id());
+        assertEquals("3", edited.next().id());
     }
     @Test public void repeatOneAndSinglePlayOnlyAffectAutomaticCompletion() {
         PlaybackQueue q = queue(); q.setMode(PlaybackMode.REPEAT_ONE);

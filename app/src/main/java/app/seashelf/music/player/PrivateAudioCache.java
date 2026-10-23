@@ -9,6 +9,7 @@ import androidx.media3.datasource.DataSpec;
 import androidx.media3.datasource.DefaultHttpDataSource;
 import androidx.media3.datasource.TransferListener;
 import androidx.media3.datasource.cache.CacheDataSource;
+import androidx.media3.datasource.cache.CacheWriter;
 import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor;
 import androidx.media3.datasource.cache.SimpleCache;
 import java.io.File;
@@ -33,10 +34,29 @@ public final class PrivateAudioCache {
     }
 
     public static DataSource.Factory factory(Context context) {
-        DefaultHttpDataSource.Factory http = new DefaultHttpDataSource.Factory()
-                .setUserAgent("SeaShelf/0.3.1").setConnectTimeoutMs(10000).setReadTimeoutMs(15000)
+        return cachedFactory(get(context), http(10000, 15000));
+    }
+
+    public static PrefetchScheduler.Task prefetchTask(Context context, String url, String key) {
+        return prefetchTask(get(context), http(5000, 5000), url, key);
+    }
+
+    /** Visible to instrumentation: prefetch and playback use identical cache identity and URI privacy rules. */
+    public static PrefetchScheduler.Task prefetchTask(SimpleCache cache, DataSource.Factory upstream,
+                                                      String url, String key) {
+        CacheDataSource source = cachedFactory(cache, upstream).createDataSourceForDownloading();
+        CacheWriter writer = new CacheWriter(source,
+                new DataSpec.Builder().setUri(Uri.parse(url)).setKey(key).build(), null, null);
+        return new PrefetchScheduler.Task() {
+            @Override public void run() throws IOException { writer.cache(); }
+            @Override public void cancel() { writer.cancel(); }
+        };
+    }
+
+    private static DefaultHttpDataSource.Factory http(int connectTimeoutMs, int readTimeoutMs) {
+        return new DefaultHttpDataSource.Factory().setUserAgent("SeaShelf/0.4.3")
+                .setConnectTimeoutMs(connectTimeoutMs).setReadTimeoutMs(readTimeoutMs)
                 .setContentTypePredicate(StreamPolicy::acceptsContentType);
-        return cachedFactory(get(context), http);
     }
 
     /** Visible to instrumentation: exercise the same cache/URI privacy path as playback. */
